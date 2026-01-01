@@ -27,23 +27,44 @@ if 'logged_in_user' not in st.session_state:
 # --- 5. TAMPILAN LOGIN & REGISTRASI ---
 def show_auth():
     st.markdown("<h1 style='text-align: center; color: #059669;'>🎓 SMA Muhammadiyah 4 Banjarnegara</h1>", unsafe_allow_html=True)
+    
+    # Tombol Refresh Data (Penting agar user baru terbaca)
+    if st.button("🔄 Refresh Database"):
+        st.cache_data.clear()
+        st.rerun()
+
     tab1, tab2 = st.tabs(["🔑 Masuk", "📝 Registrasi"])
     
-    df_users = load_data("users")
-
     with tab1:
+        st.subheader("Login Pengguna")
         with st.form("login_form"):
-            u_nama = st.selectbox("Pilih User", df_users['nama'].tolist() if not df_users.empty else ["Belum ada user"])
-            u_pass = st.text_input("Password", type="password")
-            if st.form_submit_button("Masuk"):
-                user_row = df_users[(df_users['nama'] == u_nama) & (df_users['password'].astype(str) == u_pass)]
-                if not user_row.empty:
-                    st.session_state.logged_in_user = user_row.iloc[0].to_dict()
+            # Menggunakan text_input (manual), bukan selectbox
+            u_nama_input = st.text_input("Nama Lengkap")
+            u_pass_input = st.text_input("Password", type="password")
+            
+            submit_login = st.form_submit_button("Masuk")
+            
+            if submit_login:
+                # Ambil data terbaru dari Google Sheets
+                df_users = load_data("users")
+                
+                # Cek apakah nama dan password cocok
+                # Menggunakan .strip() untuk menghindari spasi tak sengaja
+                user_match = df_users[
+                    (df_users['nama'].astype(str).str.strip() == u_nama_input.strip()) & 
+                    (df_users['password'].astype(str) == u_pass_input)
+                ]
+                
+                if not user_match.empty:
+                    st.session_state.logged_in_user = user_match.iloc[0].to_dict()
+                    st.success(f"Selamat datang, {u_nama_input}!")
                     st.rerun()
                 else:
-                    st.error("Password Salah!")
+                    st.error("❌ Nama atau Password salah, atau user belum terdaftar.")
 
     with tab2:
+        st.subheader("Pendaftaran User")
+        # (Bagian form pendaftaran tetap sama seperti sebelumnya)
         with st.form("reg_form"):
             role = st.selectbox("Daftar Sebagai", ["Siswa", "Guru", "Admin TU"])
             new_nama = st.text_input("Nama Lengkap")
@@ -52,14 +73,15 @@ def show_auth():
             new_kelas = st.selectbox("Kelas", ["X-A", "X-B", "XI-A", "XI-B", "XII-A", "XII-B"]) if role == "Siswa" else "-"
             
             if st.form_submit_button("Daftar"):
+                df_users = load_data("users") # Cek data lama dulu
                 if role in ["Guru", "Admin TU"] and len(new_nik) != 16:
                     st.error("NIK harus 16 digit!")
                 elif new_nama and new_pass:
-                    # Logika simpan ke GSHEET (Memerlukan Write Permission)
                     new_data = pd.DataFrame([{"nama": new_nama, "password": new_pass, "role": role, "kelas": new_kelas, "nik": new_nik}])
                     updated_df = pd.concat([df_users, new_data], ignore_index=True)
                     conn.update(worksheet="users", data=updated_df)
-                    st.success("Registrasi Berhasil! Silakan Login.")
+                    st.cache_data.clear() # Hapus cache agar user baru langsung bisa login
+                    st.success("✅ Registrasi Berhasil! Silakan klik tab 'Masuk'.")
                 else:
                     st.error("Data tidak lengkap.")
 
