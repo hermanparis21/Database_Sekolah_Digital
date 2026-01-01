@@ -3,3 +3,5 @@ pandas
 st-gsheets-connection
 google-auth
 xlsxwriter
+streamlit-js-eval
+geopy
