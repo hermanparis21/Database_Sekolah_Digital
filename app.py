@@ -42,19 +42,20 @@ lang_dict = {
     }
 }
 
-# --- 4. DATA & LOGGING ---
+# --- 4. DATA & LOGGING (OPTIMIZED CACHE) ---
 if 'lang' not in st.session_state: st.session_state.lang = "ID"
 if 'logged_in_user' not in st.session_state: st.session_state.logged_in_user = None
 
 L = lang_dict[st.session_state.lang]
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+# Menggunakan TTL 5 detik untuk mengurangi beban API Google Sheets
 def load_data(sheet_name):
-    return conn.read(worksheet=sheet_name, ttl="0s")
+    return conn.read(worksheet=sheet_name, ttl="5s")
 
 def add_log(user, activity, detail):
     try:
-        df_log = load_data("log_system")
+        df_log = conn.read(worksheet="log_system", ttl="0s")
         new_entry = pd.DataFrame([{"waktu": datetime.now(jakarta_tz).strftime("%Y-%m-%d %H:%M:%S"), "user": user, "aktivitas": activity, "keterangan": detail}])
         conn.update(worksheet="log_system", data=pd.concat([df_log, new_entry], ignore_index=True))
     except: pass
@@ -109,85 +110,51 @@ def show_dashboard():
     if user['role'] in ["Guru", "Admin TU"]: menu_opt += [L['lapor'], L['log_sys']]
     choice = st.sidebar.radio("Menu", menu_opt)
 
-    # --- HOME (RESUME DASHBOARD) ---
+    # --- HOME (RESUME) ---
     if choice == "🏠 Home":
         st.subheader(f"Selamat Datang, {user['nama']}!")
-        df_p = load_data("presensi")
-        df_ts = load_data("tugas_selesai")
         today = datetime.now(jakarta_tz).strftime("%Y-%m-%d")
 
         if user['role'] in ["Guru", "Admin TU"]:
+            df_p = load_data("presensi")
+            df_ts = load_data("tugas_selesai")
             st.markdown("### 📊 Ringkasan Harian")
             c1, c2, c3, c4 = st.columns(4)
             p_today = df_p[df_p['waktu'].str.contains(today, na=False)]
-            
             with c1: st.markdown(f"<div class='stat-card'><h3>{len(p_today[p_today['jenis']=='Masuk'])}</h3><p>Hadir</p></div>", unsafe_allow_html=True)
-            with c2: st.markdown(f"<div class='stat-card'><h3>{len(p_today[p_today['jenis']=='Dhuha'])}</h3><p>Sholat Dhuha</p></div>", unsafe_allow_html=True)
-            with c3: st.markdown(f"<div class='stat-card'><h3>{len(p_today[p_today['jenis']=='Dzuhur'])}</h3><p>Sholat Dzuhur</p></div>", unsafe_allow_html=True)
-            with c4: st.markdown(f"<div class='stat-card'><h3>{len(df_ts[df_ts['waktu'].str.contains(today, na=False)])}</h3><p>Tugas Selesai</p></div>", unsafe_allow_html=True)
+            with c2: st.markdown(f"<div class='stat-card'><h3>{len(p_today[p_today['jenis']=='Dhuha'])}</h3><p>Dhuha</p></div>", unsafe_allow_html=True)
+            with c3: st.markdown(f"<div class='stat-card'><h3>{len(p_today[p_today['jenis']=='Dzuhur'])}</h3><p>Dzuhur</p></div>", unsafe_allow_html=True)
+            with c4: st.markdown(f"<div class='stat-card'><h3>{len(df_ts[df_ts['waktu'].str.contains(today, na=False)])}</h3><p>Tugas</p></div>", unsafe_allow_html=True)
         
         elif user['role'] == "Siswa":
-            st.info(f"Kelas Anda: {user['kelas']}")
             df_spp = load_data("spp")
             my_spp = df_spp[df_spp['nama'] == user['nama']]
             tunggakan = 1200000 - my_spp['jumlah'].sum() if not my_spp.empty else 1200000
-            st.metric("Tunggakan SPP Anda", f"Rp {tunggakan:,.0f}")
+            st.metric("Tunggakan SPP", f"Rp {tunggakan:,.0f}")
 
-    # --- PRESENSI (FIXED UNBOUND ERROR) ---
+    # --- PRESENSI ---
     elif choice == f"📍 {L['absen_h']}":
         st.subheader(L['absen_h'])
         loc = get_geolocation()
         if loc:
-            u_loc = (loc['coords']['latitude'], loc['coords']['longitude'])
-            dist = geodesic(u_loc, (-7.2164697698622335, 109.64013014754921)).meters
+            dist = geodesic((loc['coords']['latitude'], loc['coords']['longitude']), (-7.2164697698622335, 109.64013014754921)).meters
             if dist <= 100:
                 m_absen = st.selectbox(L['pilih_j'], ["Masuk", "Dhuha", "Dzuhur", "Pulang"])
                 img_now = st.camera_input(L['face_now'])
                 if st.button("Submit") and img_now:
-                    df_p = load_data("presensi") # MEMUAT DATA PRESENSI (FIXED)
+                    df_p = load_data("presensi")
                     new_p = pd.DataFrame([{"nama": user['nama'], "kelas": user.get('kelas', '-'), "waktu": datetime.now(jakarta_tz).strftime("%Y-%m-%d %H:%M:%S"), "jenis": m_absen, "status": "VALID"}])
                     conn.update(worksheet="presensi", data=pd.concat([df_p, new_p], ignore_index=True))
-                    add_log(user['nama'], "PRESENSI", m_absen)
-                    st.success("Presensi Berhasil!")
+                    add_log(user['nama'], "PRESENSI", m_absen); st.success("Presensi Berhasil!")
             else: st.error(L['gps_fail'])
-
-    # --- MANAJEMEN SPP ---
-    elif choice == L['spp']:
-        st.header(L['spp'])
-        df_u = load_data("users")
-        df_spp = load_data("spp")
-        today_date = datetime.now(jakarta_tz).strftime("%Y-%m-%d")
-        
-        if user['role'] == "Admin TU":
-            with st.expander("➕ Input Pembayaran Baru"):
-                with st.form("spp_form"):
-                    siswa_sel = st.selectbox("Pilih Siswa", df_u[df_u['role']=='Siswa']['nama'].tolist())
-                    jml = st.number_input("Jumlah Bayar (Rp)", min_value=0)
-                    if st.form_submit_button("Simpan Pembayaran"):
-                        siswa_data = df_u[df_u['nama'] == siswa_sel].iloc[0]
-                        new_pay = pd.DataFrame([{"nama": siswa_sel, "nis": siswa_data['id_unik'], "kelas": siswa_data['kelas'], "jumlah": jml, "tanggal": today_date}])
-                        conn.update(worksheet="spp", data=pd.concat([df_spp, new_pay], ignore_index=True))
-                        add_log(user['nama'], "BAYAR SPP", f"Siswa: {siswa_sel}")
-                        st.success("Data Tersimpan!")
-            
-            st.subheader("📊 Rekap Tunggakan per Kelas")
-            if not df_spp.empty:
-                df_spp_rek = df_spp.groupby('kelas')['jumlah'].sum().reset_index()
-                st.bar_chart(df_spp_rek.set_index('kelas'))
-            else: st.info("Belum ada data pembayaran.")
-
-        elif user['role'] == "Guru":
-            st.write(f"Data SPP Kelas yang Diampu ({user['kelas']})")
-            st.dataframe(df_spp[df_spp['kelas'] == user['kelas']], width='stretch')
-
-        elif user['role'] == "Siswa":
-            st.write("Riwayat Pembayaran Anda")
-            st.dataframe(df_spp[df_spp['nama'] == user['nama']], width='stretch')
 
     # --- TUGAS ---
     elif choice == f"{L['tugas']}":
         st.header(L['tugas'])
-        df_t = load_data("tugas"); df_done = load_data("tugas_selesai"); df_u = load_data("users")
+        df_t = load_data("tugas")
+        df_done = load_data("tugas_selesai")
+        df_u = load_data("users")
+
         if user['role'] == "Guru":
             with st.expander("➕ Buat Tugas Baru"):
                 with st.form("t_f"):
@@ -203,25 +170,45 @@ def show_dashboard():
                 with st.expander(f"📊 {r['judul']} ({sudah_s}/{total_s})"):
                     st.progress((sudah_s/total_s) if total_s>0 else 0)
                     st.table(df_done[df_done['id_tugas'].astype(str) == str(r['id'])][['nama', 'kelas', 'waktu']])
-        else:
+        
+        else: # Dashboard SISWA
             user_kls = str(user.get('kelas', ''))
             rel_t = df_t[df_t['kelas'].astype(str).str.contains(user_kls, na=False)]
             for _, r in rel_t.iterrows():
                 is_comp = not df_done[(df_done['id_tugas'].astype(str) == str(r['id'])) & (df_done['nama'] == user['nama'])].empty
                 st.markdown(f'<div class="task-card"><h4>{r["judul"]}</h4><p>{r["deskripsi"]}</p></div>', unsafe_allow_html=True)
-                if not is_comp and st.button("Selesai", key=str(r['id'])):
-                    new_d = pd.DataFrame([{"id_tugas": str(r['id']), "nama": user['nama'], "kelas": user['kelas'], "waktu": now_dt.strftime("%H:%M %d/%m")}])
-                    conn.update(worksheet="tugas_selesai", data=pd.concat([df_done, new_d], ignore_index=True))
-                    st.rerun()
+                if not is_comp:
+                    if st.button("Selesai / Done", key=f"btn_{r['id']}"):
+                        # Re-load data tepat sebelum simpan untuk meminimalkan konflik
+                        df_done_live = load_data("tugas_selesai")
+                        new_d = pd.DataFrame([{"id_tugas": str(r['id']), "nama": user['nama'], "kelas": user['kelas'], "waktu": now_dt.strftime("%H:%M %d/%m")}])
+                        conn.update(worksheet="tugas_selesai", data=pd.concat([df_done_live, new_d], ignore_index=True))
+                        add_log(user['nama'], "TUGAS SELESAI", r['judul'])
+                        st.rerun()
+                else: st.success("✅ Anda telah menyelesaikan tugas ini.")
+
+    # --- MANAJEMEN SPP ---
+    elif choice == L['spp']:
+        st.header(L['spp'])
+        df_u = load_data("users")
+        df_spp = load_data("spp")
+        if user['role'] == "Admin TU":
+            with st.form("spp_form"):
+                siswa_sel = st.selectbox("Pilih Siswa", df_u[df_u['role']=='Siswa']['nama'].tolist())
+                jml = st.number_input("Jumlah Bayar (Rp)", min_value=0)
+                if st.form_submit_button("Simpan"):
+                    siswa_data = df_u[df_u['nama'] == siswa_sel].iloc[0]
+                    new_pay = pd.DataFrame([{"nama": siswa_sel, "nis": siswa_data['id_unik'], "kelas": siswa_data['kelas'], "jumlah": jml, "tanggal": today}])
+                    conn.update(worksheet="spp", data=pd.concat([df_spp, new_pay], ignore_index=True))
+                    st.success("Tersimpan!")
+        elif user['role'] == "Guru":
+            st.dataframe(df_spp[df_spp['kelas'] == user['kelas']], width='stretch')
+        else: st.dataframe(df_spp[df_spp['nama'] == user['nama']], width='stretch')
 
     # --- LAPORAN & LOG ---
     elif choice == L['lapor']:
-        st.header(L['lapor'])
-        df_p = load_data("presensi")
-        st.dataframe(df_p, width='stretch')
-
+        st.dataframe(load_data("presensi"), width='stretch')
     elif choice == L['log_sys']:
-        st.header(L['log_sys'])
         st.text_area("Logs", value=load_data("log_system").sort_values(by='waktu', ascending=False).to_string(index=False), height=400)
 
     if st.sidebar.button(L['out']):
