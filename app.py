@@ -3,12 +3,14 @@ import pandas as pd
 from datetime import datetime
 import datetime as dt
 import pytz
+import io
 from streamlit_gsheets import GSheetsConnection
 from streamlit_js_eval import get_geolocation
 from geopy.distance import geodesic
 
 # --- 1. KONFIGURASI ZONA WAKTU ---
 jakarta_tz = pytz.timezone('Asia/Jakarta')
+SCHOOL_LOC = (-7.2164697698622335, 109.64013014754921)
 
 # --- 2. KONFIGURASI HALAMAN ---
 st.set_page_config(page_title="SMA Muhammadiyah 4 Banjarnegara", layout="wide", page_icon="🎓")
@@ -32,24 +34,16 @@ lang_dict = {
         "nis": "NIS (Min 4 digit)", "nik": "NIK (Min 4 digit)", "face_ref": "Ambil Foto Wajah Referensi (Wajib)",
         "absen_h": "📍 Presensi Wajah & GPS", "pilih_j": "Jenis Presensi", "face_now": "Verifikasi Wajah Sekarang",
         "tugas": "📚 Tugas Sekolah", "lapor": "📊 Laporan Presensi", "log_sys": "⚙️ Log System", "spp": "💰 Manajemen SPP", "out": "Keluar"
-    },
-    "EN": {
-        "slogan": "Creating Pious, Achieving, and Environmentally Conscious Students",
-        "login": "Login", "reg": "Student Registration", "nama": "Full Name", "pass": "Password",
-        "nis": "Student ID (Min 4 digits)", "nik": "Teacher ID (Min 4 digits)", "face_ref": "Capture Reference Face",
-        "absen_h": "📍 Attendance", "pilih_j": "Type", "face_now": "Verify Face Now",
-        "tugas": "📚 Tasks", "lapor": "📊 Reports", "log_sys": "⚙️ Log System", "spp": "💰 Tuition Fee", "out": "Logout"
     }
 }
 
-# --- 4. DATA & LOGGING (OPTIMIZED CACHE) ---
+# --- 4. DATA & LOGGING (WITH CACHE) ---
 if 'lang' not in st.session_state: st.session_state.lang = "ID"
 if 'logged_in_user' not in st.session_state: st.session_state.logged_in_user = None
 
 L = lang_dict[st.session_state.lang]
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Menggunakan TTL 5 detik untuk mengurangi beban API Google Sheets
 def load_data(sheet_name):
     return conn.read(worksheet=sheet_name, ttl="5s")
 
@@ -60,9 +54,24 @@ def add_log(user, activity, detail):
         conn.update(worksheet="log_system", data=pd.concat([df_log, new_entry], ignore_index=True))
     except: pass
 
+# --- 5. LOGIKA STATUS PRESENSI ---
+def get_attendance_status(jenis, waktu_str):
+    try:
+        t = datetime.strptime(waktu_str, "%Y-%m-%d %H:%M:%S").time()
+        if jenis == "Masuk":
+            return "Valid" if dt.time(6,0) <= t <= dt.time(7,30) else "Terlambat"
+        elif jenis == "Dhuha":
+            return "Valid" if dt.time(7,15) <= t <= dt.time(8,0) else "Terlambat"
+        elif jenis == "Dzuhur":
+            return "Valid" if dt.time(11,30) <= t <= dt.time(13,0) else "Terlambat"
+        elif jenis == "Pulang":
+            return "Valid" if t >= dt.time(14,30) else "Pulang Cepat"
+        return "Unknown"
+    except: return "Format Error"
+
 list_kelas = [f"{t}-{h}" for t in ["X", "XI", "XII"] for h in ["A", "B", "C", "D", "E", "F"]]
 
-# --- 5. HEADER & JAM ---
+# --- HEADER & JAM ---
 st.markdown(f"<h1 class='header-text'>🎓 SMA Muhammadiyah 4 Banjarnegara</h1>", unsafe_allow_html=True)
 st.markdown(f"<p class='slogan'>{L['slogan']}</p>", unsafe_allow_html=True)
 now_dt = datetime.now(jakarta_tz)
@@ -90,22 +99,18 @@ def show_auth():
             pw = st.text_input(L['pass'])
             id_val = st.text_input("NIS/NIK (Min 4 digit)")
             kls = st.selectbox("Kelas", list_kelas) if role == "Siswa" else "-"
-            st.info(L['face_ref'])
-            f_ref = st.camera_input("Capture Face Reference")
+            st.info(L['face_ref']); f_ref = st.camera_input("Capture Reference")
             if st.form_submit_button(L['reg']):
-                if not f_ref: st.error("Foto wajah wajib!"); return
-                if (len(n) < 3) or (len(id_val) < 4): st.error("Input minimal karakter tidak terpenuhi!"); return
+                if not f_ref or len(n) < 3: st.error("Data tidak lengkap!"); return
                 df_u = load_data("users")
                 new_u = pd.DataFrame([{"nama": n, "password": pw, "role": role, "kelas": kls, "id_unik": id_val}])
                 conn.update(worksheet="users", data=pd.concat([df_u, new_u], ignore_index=True))
-                add_log(n, "REGISTRASI", f"Role: {role}")
                 st.success("Registrasi Berhasil!")
 
 # --- 7. DASHBOARD ---
 def show_dashboard():
     user = st.session_state.logged_in_user
     st.sidebar.title(f"👤 {user['nama']}")
-    
     menu_opt = ["🏠 Home", f"📍 {L['absen_h']}", f"{L['tugas']}", L['spp']]
     if user['role'] in ["Guru", "Admin TU"]: menu_opt += [L['lapor'], L['log_sys']]
     choice = st.sidebar.radio("Menu", menu_opt)
@@ -114,22 +119,17 @@ def show_dashboard():
     if choice == "🏠 Home":
         st.subheader(f"Selamat Datang, {user['nama']}!")
         today = datetime.now(jakarta_tz).strftime("%Y-%m-%d")
-
         if user['role'] in ["Guru", "Admin TU"]:
-            df_p = load_data("presensi")
-            df_ts = load_data("tugas_selesai")
-            st.markdown("### 📊 Ringkasan Harian")
-            c1, c2, c3, c4 = st.columns(4)
+            df_p = load_data("presensi"); df_ts = load_data("tugas_selesai")
             p_today = df_p[df_p['waktu'].str.contains(today, na=False)]
+            c1, c2, c3, c4 = st.columns(4)
             with c1: st.markdown(f"<div class='stat-card'><h3>{len(p_today[p_today['jenis']=='Masuk'])}</h3><p>Hadir</p></div>", unsafe_allow_html=True)
             with c2: st.markdown(f"<div class='stat-card'><h3>{len(p_today[p_today['jenis']=='Dhuha'])}</h3><p>Dhuha</p></div>", unsafe_allow_html=True)
             with c3: st.markdown(f"<div class='stat-card'><h3>{len(p_today[p_today['jenis']=='Dzuhur'])}</h3><p>Dzuhur</p></div>", unsafe_allow_html=True)
             with c4: st.markdown(f"<div class='stat-card'><h3>{len(df_ts[df_ts['waktu'].str.contains(today, na=False)])}</h3><p>Tugas</p></div>", unsafe_allow_html=True)
-        
-        elif user['role'] == "Siswa":
+        else:
             df_spp = load_data("spp")
-            my_spp = df_spp[df_spp['nama'] == user['nama']]
-            tunggakan = 1200000 - my_spp['jumlah'].sum() if not my_spp.empty else 1200000
+            tunggakan = 1200000 - df_spp[df_spp['nama'] == user['nama']]['jumlah'].sum()
             st.metric("Tunggakan SPP", f"Rp {tunggakan:,.0f}")
 
     # --- PRESENSI ---
@@ -137,83 +137,92 @@ def show_dashboard():
         st.subheader(L['absen_h'])
         loc = get_geolocation()
         if loc:
-            dist = geodesic((loc['coords']['latitude'], loc['coords']['longitude']), (-7.2164697698622335, 109.64013014754921)).meters
+            u_coords = (loc['coords']['latitude'], loc['coords']['longitude'])
+            dist = geodesic(u_coords, SCHOOL_LOC).meters
             if dist <= 100:
                 m_absen = st.selectbox(L['pilih_j'], ["Masuk", "Dhuha", "Dzuhur", "Pulang"])
                 img_now = st.camera_input(L['face_now'])
                 if st.button("Submit") and img_now:
                     df_p = load_data("presensi")
-                    new_p = pd.DataFrame([{"nama": user['nama'], "kelas": user.get('kelas', '-'), "waktu": datetime.now(jakarta_tz).strftime("%Y-%m-%d %H:%M:%S"), "jenis": m_absen, "status": "VALID"}])
+                    new_p = pd.DataFrame([{"nama": user['nama'], "kelas": user.get('kelas', '-'), "waktu": datetime.now(jakarta_tz).strftime("%Y-%m-%d %H:%M:%S"), "jenis": m_absen, "jarak": f"{int(dist)}m", "coords": f"{u_coords}"}])
                     conn.update(worksheet="presensi", data=pd.concat([df_p, new_p], ignore_index=True))
-                    add_log(user['nama'], "PRESENSI", m_absen); st.success("Presensi Berhasil!")
-            else: st.error(L['gps_fail'])
+                    st.success("Presensi Berhasil!")
+            else: st.error(f"Di luar radius! Jarak Anda: {int(dist)}m")
 
     # --- TUGAS ---
     elif choice == f"{L['tugas']}":
         st.header(L['tugas'])
-        df_t = load_data("tugas")
-        df_done = load_data("tugas_selesai")
-        df_u = load_data("users")
-
+        df_t = load_data("tugas"); df_done = load_data("tugas_selesai"); df_u = load_data("users")
         if user['role'] == "Guru":
             with st.expander("➕ Buat Tugas Baru"):
                 with st.form("t_f"):
                     t_j = st.text_input("Judul"); t_d = st.text_area("Deskripsi"); t_k = st.multiselect("Kelas", list_kelas)
                     if st.form_submit_button("Kirim"):
                         new_t = pd.DataFrame([{"id": datetime.now(jakarta_tz).strftime("%H%M%S"), "guru": user['nama'], "judul": t_j, "deskripsi": t_d, "kelas": ",".join(t_k)}])
-                        conn.update(worksheet="tugas", data=pd.concat([df_t, new_t], ignore_index=True))
-                        st.rerun()
+                        conn.update(worksheet="tugas", data=pd.concat([df_t, new_t], ignore_index=True)); st.rerun()
             for _, r in df_t.iterrows():
-                target_kls = r['kelas'].split(',')
-                total_s = len(df_u[(df_u['role'] == 'Siswa') & (df_u['kelas'].isin(target_kls))])
-                sudah_s = len(df_done[df_done['id_tugas'].astype(str) == str(r['id'])])
-                with st.expander(f"📊 {r['judul']} ({sudah_s}/{total_s})"):
-                    st.progress((sudah_s/total_s) if total_s>0 else 0)
-                    st.table(df_done[df_done['id_tugas'].astype(str) == str(r['id'])][['nama', 'kelas', 'waktu']])
-        
-        else: # Dashboard SISWA
-            user_kls = str(user.get('kelas', ''))
-            rel_t = df_t[df_t['kelas'].astype(str).str.contains(user_kls, na=False)]
+                with st.expander(f"📊 {r['judul']}"):
+                    st.table(df_done[df_done['id_tugas'].astype(str) == str(r['id'])])
+            
+            # Ekspor Tugas
+            st.divider()
+            col_ex1, col_ex2 = st.columns(2)
+            with col_ex1:
+                output = io.BytesIO()
+                with pd.ExcelWriter(output, engine='xlsxwriter') as writer: df_done.to_excel(writer, index=False)
+                st.download_button("📥 Ekspor Tugas (XLSX)", output.getvalue(), "laporan_tugas.xlsx")
+            with col_ex2: st.download_button("📥 Ekspor Tugas (TXT)", df_done.to_string(index=False), "laporan_tugas.txt")
+
+        else:
+            rel_t = df_t[df_t['kelas'].astype(str).str.contains(str(user.get('kelas','')), na=False)]
             for _, r in rel_t.iterrows():
-                is_comp = not df_done[(df_done['id_tugas'].astype(str) == str(r['id'])) & (df_done['nama'] == user['nama'])].empty
-                st.markdown(f'<div class="task-card"><h4>{r["judul"]}</h4><p>{r["deskripsi"]}</p></div>', unsafe_allow_html=True)
-                if not is_comp:
-                    if st.button("Selesai / Done", key=f"btn_{r['id']}"):
-                        # Re-load data tepat sebelum simpan untuk meminimalkan konflik
-                        df_done_live = load_data("tugas_selesai")
-                        new_d = pd.DataFrame([{"id_tugas": str(r['id']), "nama": user['nama'], "kelas": user['kelas'], "waktu": now_dt.strftime("%H:%M %d/%m")}])
-                        conn.update(worksheet="tugas_selesai", data=pd.concat([df_done_live, new_d], ignore_index=True))
-                        add_log(user['nama'], "TUGAS SELESAI", r['judul'])
-                        st.rerun()
-                else: st.success("✅ Anda telah menyelesaikan tugas ini.")
+                if st.button(f"Selesaikan: {r['judul']}", key=f"t_{r['id']}"):
+                    df_live = load_data("tugas_selesai")
+                    new_d = pd.DataFrame([{"id_tugas": str(r['id']), "nama": user['nama'], "kelas": user['kelas'], "waktu": now_dt.strftime("%d/%m %H:%M")}])
+                    conn.update(worksheet="tugas_selesai", data=pd.concat([df_live, new_d], ignore_index=True)); st.rerun()
 
-    # --- MANAJEMEN SPP ---
-    elif choice == L['spp']:
-        st.header(L['spp'])
-        df_u = load_data("users")
-        df_spp = load_data("spp")
-        if user['role'] == "Admin TU":
-            with st.form("spp_form"):
-                siswa_sel = st.selectbox("Pilih Siswa", df_u[df_u['role']=='Siswa']['nama'].tolist())
-                jml = st.number_input("Jumlah Bayar (Rp)", min_value=0)
-                if st.form_submit_button("Simpan"):
-                    siswa_data = df_u[df_u['nama'] == siswa_sel].iloc[0]
-                    new_pay = pd.DataFrame([{"nama": siswa_sel, "nis": siswa_data['id_unik'], "kelas": siswa_data['kelas'], "jumlah": jml, "tanggal": today}])
-                    conn.update(worksheet="spp", data=pd.concat([df_spp, new_pay], ignore_index=True))
-                    st.success("Tersimpan!")
-        elif user['role'] == "Guru":
-            st.dataframe(df_spp[df_spp['kelas'] == user['kelas']], width='stretch')
-        else: st.dataframe(df_spp[df_spp['nama'] == user['nama']], width='stretch')
-
-    # --- LAPORAN & LOG ---
+    # --- LAPORAN PRESENSI (PENYEMPURNAAN) ---
     elif choice == L['lapor']:
-        st.dataframe(load_data("presensi"), width='stretch')
+        st.header(L['lapor'])
+        df_p = load_data("presensi")
+        
+        # Penentuan Status Berdasarkan Waktu
+        df_p['Status Waktu'] = df_p.apply(lambda x: get_attendance_status(x['jenis'], x['waktu']), axis=1)
+        
+        # Styling: Warna Merah Bold untuk Terlambat
+        def highlight_status(val):
+            color = 'red' if val in ['Terlambat', 'Pulang Cepat'] else 'black'
+            weight = 'bold' if val in ['Terlambat', 'Pulang Cepat'] else 'normal'
+            return f'color: {color}; font-weight: {weight}'
+        
+        st.dataframe(df_p.style.applymap(highlight_status, subset=['Status Waktu']), width='stretch')
+        
+        st.divider()
+        c1, c2 = st.columns(2)
+        with c1:
+            buffer = io.BytesIO()
+            with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer: df_p.to_excel(writer, index=False)
+            st.download_button("📥 Ekspor Laporan (XLSX)", buffer.getvalue(), "laporan_presensi.xlsx")
+        with c2: st.download_button("📥 Ekspor Laporan (TXT)", df_p.to_string(index=False), "laporan_presensi.txt")
+
+    # --- MANAJEMEN SPP & LOG ---
+    elif choice == L['spp']:
+        df_u = load_data("users"); df_spp = load_data("spp")
+        if user['role'] == "Admin TU":
+            with st.form("spp"):
+                s_sel = st.selectbox("Siswa", df_u[df_u['role']=='Siswa']['nama'].tolist())
+                jml = st.number_input("Jumlah", min_value=0)
+                if st.form_submit_button("Bayar"):
+                    s_data = df_u[df_u['nama'] == s_sel].iloc[0]
+                    new_pay = pd.DataFrame([{"nama": s_sel, "nis": s_data['id_unik'], "kelas": s_data['kelas'], "jumlah": jml, "tanggal": now_dt.strftime("%Y-%m-%d")}])
+                    conn.update(worksheet="spp", data=pd.concat([df_spp, new_pay], ignore_index=True)); st.success("Ok!")
+        st.dataframe(df_spp[df_spp['kelas'] == user['kelas']] if user['role'] == "Guru" else df_spp)
+
     elif choice == L['log_sys']:
         st.text_area("Logs", value=load_data("log_system").sort_values(by='waktu', ascending=False).to_string(index=False), height=400)
 
     if st.sidebar.button(L['out']):
-        st.session_state.logged_in_user = None
-        st.rerun()
+        st.session_state.logged_in_user = None; st.rerun()
 
 if st.session_state.logged_in_user is None: show_auth()
 else: show_dashboard()
