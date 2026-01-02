@@ -113,9 +113,7 @@ def show_dashboard():
     if choice == "🏠 Home":
         st.subheader(f"Selamat Datang, {user['nama']}!")
         df_p = load_data("presensi")
-        df_t = load_data("tugas")
         df_ts = load_data("tugas_selesai")
-        df_u = load_data("users")
         today = datetime.now(jakarta_tz).strftime("%Y-%m-%d")
 
         if user['role'] in ["Guru", "Admin TU"]:
@@ -130,13 +128,12 @@ def show_dashboard():
         
         elif user['role'] == "Siswa":
             st.info(f"Kelas Anda: {user['kelas']}")
-            # Resume pribadi siswa (SPP & Tugas)
             df_spp = load_data("spp")
             my_spp = df_spp[df_spp['nama'] == user['nama']]
             tunggakan = 1200000 - my_spp['jumlah'].sum() if not my_spp.empty else 1200000
             st.metric("Tunggakan SPP Anda", f"Rp {tunggakan:,.0f}")
 
-    # --- PRESENSI ---
+    # --- PRESENSI (FIXED UNBOUND ERROR) ---
     elif choice == f"📍 {L['absen_h']}":
         st.subheader(L['absen_h'])
         loc = get_geolocation()
@@ -147,16 +144,19 @@ def show_dashboard():
                 m_absen = st.selectbox(L['pilih_j'], ["Masuk", "Dhuha", "Dzuhur", "Pulang"])
                 img_now = st.camera_input(L['face_now'])
                 if st.button("Submit") and img_now:
+                    df_p = load_data("presensi") # MEMUAT DATA PRESENSI (FIXED)
                     new_p = pd.DataFrame([{"nama": user['nama'], "kelas": user.get('kelas', '-'), "waktu": datetime.now(jakarta_tz).strftime("%Y-%m-%d %H:%M:%S"), "jenis": m_absen, "status": "VALID"}])
                     conn.update(worksheet="presensi", data=pd.concat([df_p, new_p], ignore_index=True))
-                    add_log(user['nama'], "PRESENSI", m_absen); st.success("Berhasil!")
+                    add_log(user['nama'], "PRESENSI", m_absen)
+                    st.success("Presensi Berhasil!")
             else: st.error(L['gps_fail'])
 
-    # --- MANAJEMEN SPP (NEW FEATURE) ---
+    # --- MANAJEMEN SPP ---
     elif choice == L['spp']:
         st.header(L['spp'])
         df_u = load_data("users")
         df_spp = load_data("spp")
+        today_date = datetime.now(jakarta_tz).strftime("%Y-%m-%d")
         
         if user['role'] == "Admin TU":
             with st.expander("➕ Input Pembayaran Baru"):
@@ -165,22 +165,27 @@ def show_dashboard():
                     jml = st.number_input("Jumlah Bayar (Rp)", min_value=0)
                     if st.form_submit_button("Simpan Pembayaran"):
                         siswa_data = df_u[df_u['nama'] == siswa_sel].iloc[0]
-                        new_pay = pd.DataFrame([{"nama": siswa_sel, "nis": siswa_data['id_unik'], "kelas": siswa_data['kelas'], "jumlah": jml, "tanggal": today}])
+                        new_pay = pd.DataFrame([{"nama": siswa_sel, "nis": siswa_data['id_unik'], "kelas": siswa_data['kelas'], "jumlah": jml, "tanggal": today_date}])
                         conn.update(worksheet="spp", data=pd.concat([df_spp, new_pay], ignore_index=True))
                         add_log(user['nama'], "BAYAR SPP", f"Siswa: {siswa_sel}")
                         st.success("Data Tersimpan!")
             
             st.subheader("📊 Rekap Tunggakan per Kelas")
-            df_spp_rek = df_spp.groupby('kelas')['jumlah'].sum().reset_index()
-            st.bar_chart(df_spp_rek.set_index('kelas'))
+            if not df_spp.empty:
+                df_spp_rek = df_spp.groupby('kelas')['jumlah'].sum().reset_index()
+                st.bar_chart(df_spp_rek.set_index('kelas'))
+            else: st.info("Belum ada data pembayaran.")
 
         elif user['role'] == "Guru":
             st.write(f"Data SPP Kelas yang Diampu ({user['kelas']})")
-            st.dataframe(df_spp[df_spp['kelas'] == user['kelas']])
+            st.dataframe(df_spp[df_spp['kelas'] == user['kelas']], width='stretch')
 
-    # --- TUGAS, LAPORAN, LOG ---
+        elif user['role'] == "Siswa":
+            st.write("Riwayat Pembayaran Anda")
+            st.dataframe(df_spp[df_spp['nama'] == user['nama']], width='stretch')
+
+    # --- TUGAS ---
     elif choice == f"{L['tugas']}":
-        # (Fungsi tugas tetap sama seperti kode sebelumnya, menjamin tidak ada potongan)
         st.header(L['tugas'])
         df_t = load_data("tugas"); df_done = load_data("tugas_selesai"); df_u = load_data("users")
         if user['role'] == "Guru":
@@ -209,10 +214,11 @@ def show_dashboard():
                     conn.update(worksheet="tugas_selesai", data=pd.concat([df_done, new_d], ignore_index=True))
                     st.rerun()
 
+    # --- LAPORAN & LOG ---
     elif choice == L['lapor']:
         st.header(L['lapor'])
         df_p = load_data("presensi")
-        st.dataframe(df_p, use_container_width=True)
+        st.dataframe(df_p, width='stretch')
 
     elif choice == L['log_sys']:
         st.header(L['log_sys'])
