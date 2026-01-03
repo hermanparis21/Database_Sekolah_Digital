@@ -7,6 +7,7 @@ import io
 from streamlit_gsheets import GSheetsConnection
 from streamlit_js_eval import get_geolocation
 from geopy.distance import geodesic
+from PIL import Image
 
 # --- 1. KONFIGURASI ---
 jakarta_tz = pytz.timezone('Asia/Jakarta')
@@ -47,6 +48,15 @@ def get_attendance_status(jenis, waktu_str):
         return "Unknown"
     except: return "-"
 
+# FUNGSI KOMPRESI FOTO (AGAR TIDAK OVERLOAD GSHEETS)
+def compress_image(uploaded_file):
+    img = Image.open(uploaded_file)
+    img = img.convert("RGB")
+    buf = io.BytesIO()
+    # Kompresi ke kualitas 30% untuk menghemat karakter sel GSheets
+    img.save(buf, format="JPEG", quality=30)
+    return buf.getvalue()
+
 # --- 3. STATE ---
 if 'logged_in_user' not in st.session_state: st.session_state.logged_in_user = None
 L = {"slogan": "Mewujudkan Peserta Didik yang Bertaqwa, Berprestasi, dan Peduli Lingkungan", "login": "Masuk", "reg": "Registrasi Siswa Baru", "nama": "Nama Lengkap", "pass": "Password", "absen_h": "📍 Presensi Wajah & GPS", "pilih_j": "Jenis Presensi", "face_now": "Verifikasi Wajah Sekarang", "tugas": "📚 Tugas Sekolah", "lapor": "📊 Laporan Presensi", "log_sys": "⚙️ Log System", "spp": "💰 Manajemen SPP", "out": "Keluar"}
@@ -79,8 +89,9 @@ def show_auth():
             if st.form_submit_button(L['reg']):
                 if not f_ref or len(n) < 3: st.error("Data tidak lengkap!"); return
                 df_u = load_data("users")
-                # Menyimpan objek file gambar ke dalam dataframe (akan tersimpan sebagai string/data di GSheets)
-                new_u = pd.DataFrame([{"nama": n, "password": pw, "role": role, "kelas": kls, "id_unik": id_val, "foto_reg": f_ref.getvalue()}])
+                # Kompresi sebelum simpan ke GSheets
+                foto_kompres = compress_image(f_ref)
+                new_u = pd.DataFrame([{"nama": n, "password": pw, "role": role, "kelas": kls, "id_unik": id_val, "foto_reg": foto_kompres}])
                 conn.update(worksheet="users", data=pd.concat([df_u, new_u], ignore_index=True)); st.success("Registrasi Berhasil!")
 
 # --- 5. DASHBOARD ---
@@ -115,7 +126,9 @@ def show_dashboard():
                 img_now = st.camera_input(L['face_now'])
                 if st.button("Submit Presensi") and img_now:
                     df_p = load_data("presensi")
-                    new_p = pd.DataFrame([{"nama": user['nama'], "kelas": user.get('kelas', '-'), "waktu": datetime.now(jakarta_tz).strftime("%Y-%m-%d %H:%M:%S"), "jenis": m_absen, "jarak": f"{int(dist)}m", "foto_absen": img_now.getvalue()}])
+                    # Kompresi sebelum simpan ke GSheets
+                    foto_abs_kompres = compress_image(img_now)
+                    new_p = pd.DataFrame([{"nama": user['nama'], "kelas": user.get('kelas', '-'), "waktu": datetime.now(jakarta_tz).strftime("%Y-%m-%d %H:%M:%S"), "jenis": m_absen, "jarak": f"{int(dist)}m", "foto_absen": foto_abs_kompres}])
                     conn.update(worksheet="presensi", data=pd.concat([df_p, new_p], ignore_index=True))
                     st.success("Presensi Berhasil Disimpan!")
             else: st.error(f"Anda berada di luar radius sekolah ({int(dist)}m).")
@@ -187,20 +200,15 @@ def show_dashboard():
                     with c1:
                         st.info("📸 Foto Registrasi (Referensi)")
                         foto_reg = user_reg_data.iloc[0].get('foto_reg')
-                        if foto_reg:
-                            st.image(foto_reg, use_container_width=True)
-                        else:
-                            st.warning("Foto Registrasi tidak ditemukan biner gambarnya.")
+                        if foto_reg: st.image(foto_reg, use_container_width=True)
+                        else: st.warning("Foto Registrasi tidak ditemukan.")
                     with c2:
                         st.info("📍 Foto Saat Absen")
                         foto_abs = user_abs_data.iloc[0].get('foto_absen')
-                        if foto_abs:
-                            st.image(foto_abs, use_container_width=True)
-                        else:
-                            st.warning("Foto Absen tidak ditemukan biner gambarnya.")
-                    st.write(f"Waktu Absen: {user_abs_data.iloc[0]['waktu']}")
+                        if foto_abs: st.image(foto_abs, use_container_width=True)
+                        else: st.warning("Foto Absen tidak ditemukan.")
                 else:
-                    st.warning("Data foto tidak ditemukan.")
+                    st.warning("Data audit belum lengkap.")
 
     elif choice == L['spp']:
         st.header(L['spp'])
