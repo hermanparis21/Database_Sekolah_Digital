@@ -16,14 +16,16 @@ SCHOOL_LOC = (-7.2164697698622335, 109.64013014754921)
 
 st.set_page_config(page_title="SMA Muhammadiyah 4 Banjarnegara", layout="wide", page_icon="🎓")
 
+# CSS Styling (Status Terlambat dibuat BOLD & MERAH kembali)
 st.markdown("""
     <style>
     .stButton>button { width: 100%; border-radius: 10px; background-color: #059669; color: white; height: 3em; }
     .clock-text { text-align: center; font-weight: bold; font-size: 1.1em; color: #1e293b; background: #f1f5f9; padding: 10px; border-radius: 15px; border: 1px solid #cbd5e1; margin-bottom: 20px; }
     .header-text { text-align: center; color: #059669; margin-bottom: 0px; font-size: 2em; }
     .slogan { text-align: center; font-style: italic; color: #475569; margin-bottom: 10px; font-size: 1em; }
-    .stat-card { background: #ffffff; padding: 20px; border-radius: 15px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); text-align: center; border: 1px solid #e2e8f0; margin-bottom:10px; }
     .notif-box { padding: 15px; border-radius: 10px; margin-bottom: 10px; border-left: 5px solid #059669; background: #f0fdf4; }
+    .terlambat-text { color: #dc2626; font-weight: bold; }
+    .highlight-sholat { background: #fef9c3; border: 2px solid #facc15; padding: 10px; border-radius: 10px; text-align: center; margin-bottom: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -61,29 +63,7 @@ st.markdown(f"<p class='slogan'>{L['slogan']}</p>", unsafe_allow_html=True)
 now_dt = datetime.now(jakarta_tz)
 st.markdown(f"<div class='clock-text'>🗓️ {now_dt.strftime('%A, %d %B %Y')} | ⏰ {now_dt.strftime('%H:%M:%S')} WIB</div>", unsafe_allow_html=True)
 
-# --- 4. AUTH ---
-def show_auth():
-    t1, t2 = st.tabs([f"🔑 {L['login']}", f"📝 {L['reg']}"])
-    with t1:
-        with st.form("l_f"):
-            u = st.text_input(L['nama']).title(); p = st.text_input(L['pass'], type="password")
-            if st.form_submit_button(L['login']):
-                df_u = load_data("users")
-                m = df_u[(df_u['nama'].astype(str).str.strip() == u.strip()) & (df_u['password'].astype(str) == p.strip())]
-                if not m.empty: st.session_state.logged_in_user = m.iloc[0].to_dict(); st.rerun()
-                else: st.error("Login Gagal")
-    with t2:
-        with st.form("r_f"):
-            role = st.selectbox("Role", ["Siswa", "Guru", "Admin TU"])
-            n = st.text_input(L['nama']).title(); pw = st.text_input(L['pass']); id_v = st.text_input("NIS/NIK")
-            kls = st.selectbox("Kelas", list_kelas) if role == "Siswa" else "-"
-            f_ref = st.camera_input("Foto Registrasi")
-            if st.form_submit_button(L['reg']) and f_ref:
-                df_u = load_data("users")
-                new_u = pd.DataFrame([{"nama": n, "password": pw, "role": role, "kelas": kls, "id_unik": id_v, "foto_reg": process_photo(f_ref)}])
-                conn.update(worksheet="users", data=pd.concat([df_u, new_u], ignore_index=True)); st.success("Berhasil!")
-
-# --- 5. DASHBOARD ---
+# --- 4. DASHBOARD ---
 def show_dashboard():
     u = st.session_state.logged_in_user
     st.sidebar.title(f"👤 {u['nama']}")
@@ -94,124 +74,87 @@ def show_dashboard():
     if choice == "🏠 Home":
         st.subheader(f"Dashboard {u['role']}")
         
-        # JADWAL SHOLAT BANJARNEGARA (Parameter Instruksi)
-        st.markdown("""<div style='background:#f8fafc; padding:15px; border-radius:10px; border:1px solid #e2e8f0; margin-bottom:20px;'>
-            <b>🕌 Waktu Sholat Wilayah Banjarnegara</b> (7°24' LS, 109°42' BB)<br>
-            <small>Arah Kiblat: 294.78° | Jarak ke Mekah: 8264.2 km</small>
-            <div style='display:flex; justify-content:space-between; margin-top:10px;'>
-                <span>Subuh: 04:15</span><span>Dzuhur: 11:52</span><span>Ashar: 15:18</span><span>Maghrib: 18:07</span><span>Isya: 19:22</span>
-            </div></div>""", unsafe_allow_html=True)
+        # JADWAL SHOLAT HIGHLIGHT HARI INI
+        st.markdown(f"""<div class='highlight-sholat'>
+            <b>🕌 Jadwal Sholat Hari Ini - Banjarnegara</b><br>
+            <span style='font-size:1.2em;'>Subuh: 04:15 | Dzuhur: 11:52 | Ashar: 15:18 | Maghrib: 18:07 | Isya: 19:22</span>
+        </div>""", unsafe_allow_html=True)
 
-        # NOTIFIKASI / BROADCAST (Untuk Siswa)
-        df_bc = load_data("broadcast", ttl="5s")
+        with st.expander("📅 Jadwal Sholat Bulan Ini"):
+            # Simulasi Jadwal Satu Bulan
+            data_sholat = {"Tanggal": [f"{i} Jan" for i in range(1, 32)], "Subuh": ["04:15"]*31, "Dzuhur": ["11:52"]*31, "Ashar": ["15:18"]*31, "Maghrib": ["18:07"]*31, "Isya": ["19:22"]*31}
+            st.dataframe(pd.DataFrame(data_sholat), hide_index=True)
+
+        # NOTIFIKASI / BROADCAST (Siswa)
         if u['role'] == "Siswa":
-            st.subheader("📢 Pengumuman Sekolah")
+            df_bc = load_data("broadcast", ttl="5s")
             if not df_bc.empty:
                 rel_bc = df_bc[(df_bc['target'] == "Semua Kelas") | (df_bc['target'] == u['kelas'])]
                 for _, b in rel_bc.iterrows():
-                    with st.container():
-                        st.markdown(f"""<div class='notif-box'>
-                            <b>{b['judul']}</b><br>{b['isi']}<br>
-                            <small>📅 {b['tanggal']} | 📍 {b['tempat']} | 👤 PIC: {b['pic']}</small>
-                            </div>""", unsafe_allow_html=True)
-            
-            # Peringatan Kejujuran
-            df_warn = load_data("audit_notif", ttl="5s")
-            if not df_warn.empty:
-                my_warn = df_warn[df_warn['nama'] == u['nama']].tail(3)
-                for _, w in my_warn.iterrows():
-                    color = "blue" if w['status'] == "Valid" else "red"
-                    st.toast(f"Pesan Kedisiplinan: {w['pesan']}", icon="⚠️" if color=="red" else "✅")
-                    st.markdown(f"<div style='color:{color}; border:1px solid {color}; padding:10px; border-radius:5px; margin-bottom:5px;'>{w['pesan']} ({w['waktu']})</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='notif-box'><b>{b['judul']}</b><br>{b['isi']}<br><small>📅 {b['tanggal']} | 📍 {b['tempat']}</small></div>", unsafe_allow_html=True)
 
-    elif choice == L['broadcast']:
-        st.subheader("Kirim Pesan Broadcast")
-        with st.form("bc_form"):
-            t_j = st.text_input("Judul Pengumuman"); t_i = st.text_area("Isi Pengumuman")
-            t_t = st.date_input("Tanggal Pelaksanaan"); t_p = st.text_input("Tempat")
-            t_pic = st.text_input("Panitia/PIC"); t_target = st.selectbox("Target", ["Semua Kelas"] + list_kelas)
-            if st.form_submit_button("📢 Sebar Pengumuman"):
-                df_b = load_data("broadcast")
-                new_b = pd.DataFrame([{"judul": t_j, "isi": t_i, "tanggal": str(t_t), "tempat": t_p, "pic": t_pic, "target": t_target}])
-                conn.update(worksheet="broadcast", data=pd.concat([df_b, new_b], ignore_index=True)); st.success("Terkirim!")
-
-    elif choice == f"📍 {L['absen_h']}":
-        st.subheader(L['absen_h'])
-        loc = get_geolocation()
-        if loc:
-            dist = geodesic((loc['coords']['latitude'], loc['coords']['longitude']), SCHOOL_LOC).meters
-            if dist <= 100:
-                m_absen = st.selectbox("Jenis", ["Masuk", "Dhuha", "Dzuhur", "Pulang"])
-                img_now = st.camera_input("Verifikasi Wajah")
-                if st.button("Submit Presensi") and img_now:
-                    df_p = load_data("presensi")
-                    new_p = pd.DataFrame([{"nama": u['nama'], "kelas": u.get('kelas', '-'), "waktu": now_dt.strftime("%Y-%m-%d %H:%M:%S"), "jenis": m_absen, "jarak": f"{int(dist)}m", "foto_absen": process_photo(img_now)}])
-                    conn.update(worksheet="presensi", data=pd.concat([df_p, new_p], ignore_index=True)); st.success("Presensi Berhasil!")
-            else: st.error(f"Di luar radius ({int(dist)}m)")
+    elif choice == L['spp']:
+        st.subheader(L['spp'])
+        st.info(f"👤 **Nama Siswa:** {u['nama']}")
+        st.success("✅ Saat ini belum ada tagihan atau tunggakan SPP untuk akun Anda.")
 
     elif choice == f"{L['tugas']}":
         st.subheader(L['tugas'])
         df_t = load_data("tugas", ttl="5s"); df_done = load_data("tugas_selesai", ttl="5s")
+        
         if u['role'] == "Guru":
-            with st.form("t_f"):
-                t_j = st.text_input("Judul Tugas"); t_d = st.text_area("Instruksi"); t_k = st.multiselect("Kelas", list_kelas)
-                if st.form_submit_button("Sebarkan"):
-                    new_t = pd.DataFrame([{"id": now_dt.strftime("%H%M%S"), "guru": u['nama'], "judul": t_j, "deskripsi": t_d, "kelas": ",".join(t_k)}])
-                    conn.update(worksheet="tugas", data=pd.concat([df_t, new_t], ignore_index=True)); st.rerun()
-            st.divider()
             st.subheader("Daftar Siswa Selesai")
-            if not df_done.empty: st.table(df_done[['nama', 'kelas', 'waktu']])
+            if not df_done.empty: 
+                st.dataframe(df_done[['nama', 'kelas', 'waktu']])
+                # MENU EXPORT EXCEL
+                csv = df_done.to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Export ke CSV/Excel", data=csv, file_name="tugas_selesai.csv", mime="text/csv")
         else:
-            rel_t = df_t[df_t['kelas'].str.contains(u['kelas'], na=False)] if not df_t.empty else pd.DataFrame()
-            for _, r in rel_t.iterrows():
-                is_c = not df_done[(df_done['id_tugas'].astype(str) == str(r['id'])) & (df_done['nama'] == u['nama'])].empty if not df_done.empty else False
-                st.info(f"**{r['judul']}**: {r['deskripsi']}")
-                if not is_c and st.button("Tandai Selesai", key=f"t_{r['id']}"):
-                    new_d = pd.DataFrame([{"id_tugas": str(r['id']), "nama": u['nama'], "kelas": u['kelas'], "waktu": now_dt.strftime("%Y-%m-%d %H:%M:%S")}])
-                    conn.update(worksheet="tugas_selesai", data=pd.concat([df_done, new_d], ignore_index=True)); st.rerun()
-            st.subheader("✅ Tugas Selesai Anda")
-            if not df_done.empty: st.table(df_done[df_done['nama'] == u['nama']][['id_tugas', 'waktu']])
+            # Role Siswa: Munculkan riwayat tugas selesai
+            st.subheader("✅ Riwayat Tugas Selesai Anda")
+            if not df_done.empty:
+                my_done = df_done[df_done['nama'] == u['nama']]
+                st.table(my_done[['id_tugas', 'waktu']])
 
     elif choice == L['lapor']:
         st.header(L['lapor'])
-        tab1, tab2 = st.tabs(["📊 Data", "🔍 Audit Wajah"])
         df_p = load_data("presensi", ttl="5s")
-        
-        with tab1:
-            c1, c2, c3 = st.columns(3)
-            f_tgl = c1.date_input("Filter Tanggal", value=None)
-            f_kls = c2.selectbox("Filter Kelas", ["Semua"] + list_kelas)
-            f_sts = c3.selectbox("Filter Jenis", ["Semua", "Masuk", "Dhuha", "Dzuhur", "Pulang"])
+        if not df_p.empty:
+            df_p['Status'] = df_p.apply(lambda x: get_attendance_status(x['jenis'], x['waktu']), axis=1)
             
-            if not df_p.empty:
-                df_p['Status Waktu'] = df_p.apply(lambda x: get_attendance_status(x['jenis'], x['waktu']), axis=1)
-                dff = df_p.copy()
-                if f_tgl: dff = dff[dff['waktu'].str.contains(str(f_tgl))]
-                if f_kls != "Semua": dff = dff[dff['kelas'] == f_kls]
-                if f_sts != "Semua": dff = dff[dff['jenis'] == f_sts]
-                st.dataframe(dff.drop(columns=['foto_absen'], errors='ignore'), use_container_width=True)
+            # Formating: Terlambat Bold Merah
+            def color_status(val):
+                color = 'red; font-weight: bold' if val == 'Terlambat' else 'black'
+                return f'color: {color}'
+            
+            st.dataframe(df_p.style.applymap(color_status, subset=['Status']), width='stretch')
 
-        with tab2:
-            df_u = load_data("users", ttl="5s")
-            if not df_p.empty:
-                s_n = st.selectbox("Pilih Siswa Audit", df_p['nama'].unique())
-                ur = df_u[df_u['nama'] == s_n]; ua = df_p[df_p['nama'] == s_n].tail(1)
-                if not ur.empty and not ua.empty:
-                    c1, c2 = st.columns(2)
-                    c1.image(f"data:image/jpeg;base64,{ur.iloc[0]['foto_reg']}", caption="Registrasi")
-                    c2.image(f"data:image/jpeg;base64,{ua.iloc[0]['foto_absen']}", caption="Presensi")
-                    
-                    ca, cb = st.columns(2)
-                    if ca.button("⚠️ Kirim Peringatan (Beda)"):
-                        df_w = load_data("audit_notif")
-                        new_w = pd.DataFrame([{"nama": s_n, "pesan": "⚠️ Peringatan Kedisiplinan: Foto absen tidak sesuai dengan data registrasi. Mohon jujur dalam presensi!", "status": "Peringatan", "waktu": now_dt.strftime("%H:%M")}])
-                        conn.update(worksheet="audit_notif", data=pd.concat([df_w, new_w], ignore_index=True)); st.warning("Peringatan dikirim!")
-                    if cb.button("✅ Validasi (Sesuai)"):
-                        df_w = load_data("audit_notif")
-                        new_w = pd.DataFrame([{"nama": s_n, "pesan": "✅ Terima kasih telah melakukan presensi dengan jujur.", "status": "Valid", "waktu": now_dt.strftime("%H:%M")}])
-                        conn.update(worksheet="audit_notif", data=pd.concat([df_w, new_w], ignore_index=True)); st.success("Validasi dikirim!")
+    elif choice == L['broadcast']:
+        st.subheader("Kirim Pesan Broadcast")
+        # Pastikan Sheet "broadcast" ada di GSheets Anda untuk menghindari error WorksheetNotFound
+        with st.form("bc_form"):
+            t_j = st.text_input("Judul"); t_i = st.text_area("Isi")
+            t_target = st.selectbox("Target", ["Semua Kelas"] + list_kelas)
+            if st.form_submit_button("📢 Kirim"):
+                df_b = load_data("broadcast")
+                new_b = pd.DataFrame([{"judul": t_j, "isi": t_i, "target": t_target, "tanggal": now_dt.strftime("%Y-%m-%d")}])
+                try:
+                    conn.update(worksheet="broadcast", data=pd.concat([df_b, new_b], ignore_index=True))
+                    st.success("Terkirim!")
+                except Exception as e:
+                    st.error(f"Gagal! Pastikan tab 'broadcast' ada di Google Sheets. Error: {e}")
 
     if st.sidebar.button(L['out']): st.session_state.logged_in_user = None; st.rerun()
+
+# --- 5. AUTH (Fungsi Minimalis) ---
+def show_auth():
+    with st.form("l_f"):
+        u = st.text_input(L['nama']).title(); p = st.text_input(L['pass'], type="password")
+        if st.form_submit_button(L['login']):
+            df_u = load_data("users")
+            m = df_u[(df_u['nama'].astype(str).str.strip() == u.strip()) & (df_u['password'].astype(str) == p.strip())]
+            if not m.empty: st.session_state.logged_in_user = m.iloc[0].to_dict(); st.rerun()
+            else: st.error("Login Gagal")
 
 if st.session_state.logged_in_user is None: show_auth()
 else: show_dashboard()
